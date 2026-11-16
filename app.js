@@ -821,10 +821,7 @@
       ${tabs}
       <div class="r-cols n${Math.min(ctx.rids.length, 5)}">${cols}</div>
       <aside class="r-study-panel" hidden></aside>
-      <footer class="r-foot">
-        <span class="r-attr">Berean Standard Bible (public domain) · text from <a href="https://fetch.bible" target="_blank" rel="noopener">fetch.bible</a></span>
-        ${multi ? `<button class="btn r-all"></button>` : ''}
-      </footer>
+      ${multi ? '<footer class="r-foot"><button class="btn r-all"></button></footer>' : ''}
     </div>`;
     dlg.classList.toggle('show-fn', !!state.prefs.footnotes);
 
