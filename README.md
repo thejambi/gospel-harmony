@@ -93,5 +93,5 @@ the label shows the original text.
 ## Credits
 
 The harmony, reading notes, study questions and genealogy essay are by Dr. Doug Bookman
-([bookmanministries.com](https://www.bookmanministries.com)). The Scripture text is the
+([bookmantours.com](https://bookmantours.com/)). The Scripture text is the
 Berean Standard Bible, served by fetch.bible.
