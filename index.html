@@ -28,20 +28,6 @@
             <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><circle cx="4" cy="10" r="1.6"/><circle cx="10" cy="10" r="1.6"/><circle cx="16" cy="10" r="1.6"/></svg>
           </summary>
           <div class="menu-panel">
-            <label class="field">Bible translation for links
-              <select id="version">
-                <option value="ESV">ESV</option>
-                <option value="NASB1995">NASB 1995</option>
-                <option value="NASB">NASB 2020</option>
-                <option value="LSB">LSB</option>
-                <option value="NKJV">NKJV</option>
-                <option value="KJV">KJV</option>
-                <option value="CSB">CSB</option>
-                <option value="NIV">NIV</option>
-                <option value="NET">NET</option>
-              </select>
-            </label>
-            <hr>
             <p class="menu-note">Progress is saved in this browser only. Export a backup now and then, or to move to another device.</p>
             <button class="btn" id="export">Export backup (.json)</button>
             <label class="btn file">Import backup…<input type="file" id="import" accept="application/json,.json" hidden></label>
@@ -96,8 +82,10 @@
   </main>
 
   <footer class="foot">
-    <p>Harmony and reading notes &copy; Dr. Doug Bookman (<a href="https://www.bookmanministries.com" rel="noopener">bookmanministries.com</a>). Scripture links open at BibleGateway. Your progress never leaves this browser.</p>
+    <p>Harmony and reading notes &copy; Dr. Doug Bookman (<a href="https://www.bookmanministries.com" rel="noopener">bookmanministries.com</a>). Scripture: Berean Standard Bible, public domain (BSB Publishing, LLC, <a href="https://berean.bible" rel="noopener">berean.bible</a>), served by <a href="https://fetch.bible" rel="noopener">fetch.bible</a>. Your progress never leaves this browser.</p>
   </footer>
+
+  <dialog id="reader" aria-label="Scripture reader"></dialog>
 
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 

@@ -32,9 +32,12 @@ Progress and notes are saved in the browser's `localStorage`.
      narrative stand out, for example.
 
    A band on the grid marks where you are on the page. Click any row to jump there.
-3. **Read all accounts.** The book icon on each row opens every parallel passage on a
-   single BibleGateway page, in the translation you choose. When you come back to the
-   app, it offers to mark the section read.
+3. **Parallel reader.** The book icon on each row opens the Scripture inside the app,
+   in the Berean Standard Bible. On a wide screen the accounts sit side by side in
+   columns. On a phone each account fills the screen, and you swipe or tap a tab to move
+   to the next one; marking one read moves you on to the next unread one. A *Study notes*
+   drawer holds Bookman's note, his questions and your own notes while you read. A
+   *Footnotes* switch shows the BSB translators' notes.
 4. **Open questions carry forward.** You can mark any note as an *open question*. It
    stays in the Notebook, with a count on the tab, until you mark it resolved.
 5. **Continue.** This button jumps to the next unread section, or the next unread
@@ -49,6 +52,21 @@ Everything stays in this browser. Use the **⋯** menu to:
 
 Safari can clear site storage for sites you haven't visited in a while, so export a
 backup now and then.
+
+## Scripture text
+
+The text comes from [fetch.bible](https://fetch.bible). The app loads
+`https://v1.fetch.bible/bibles/eng_bsb/html/{book}.json` directly, with no client
+library. Each file is one whole book, split into verses, and the app puts the requested
+verse range together from it. Before display, the HTML is filtered through a short
+allow-list of tags and attributes.
+
+Each book is downloaded the first time one of its passages is opened, and is kept in the
+browser's Cache Storage after that. A passage you have read once still opens offline.
+The four Gospels together are about 800 KB before compression.
+
+The Berean Standard Bible is in the public domain (CC0) and comes from BSB Publishing, LLC
+([berean.bible](https://berean.bible)).
 
 ## Deploy to GitHub Pages
 
@@ -75,4 +93,5 @@ the label shows the original text.
 ## Credits
 
 The harmony, reading notes, study questions and genealogy essay are by Dr. Doug Bookman
-([bookmanministries.com](https://www.bookmanministries.com)).
+([bookmanministries.com](https://www.bookmanministries.com)). The Scripture text is the
+Berean Standard Bible, served by fetch.bible.

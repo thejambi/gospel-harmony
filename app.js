@@ -66,15 +66,82 @@
     }).join(', ');
   }
   const fmtRef = (ref) => `${BOOK_ABBR[ref.b]} ${fmtSegs(ref)}`;
-  const gatewayRef = (ref) => `${BOOK_NAME[ref.b]} ${fmtSegs(ref).replace(/–/g, '-')}`;
-  const gatewayUrl = (refs) => `https://www.biblegateway.com/passage/?search=${encodeURIComponent(refs.map(gatewayRef).join('; '))}&version=${encodeURIComponent(state.prefs.version)}`;
+  const longRef = (ref) => `${BOOK_NAME[ref.b]} ${fmtSegs(ref)}`;
+
+  /* ------------------------------------------------------------ Scripture: BSB via fetch.bible
+   * Each book is one static JSON file: contents[chapter][verse] = [open, verseHtml, close].
+   * A range v1..v2 is open(v1) + verseHtml(v1..v2) + close(v2). Books are cached with the
+   * Cache API so a passage read once is available offline afterwards.            */
+  const FB_URL = 'https://v1.fetch.bible/bibles/eng_bsb/html/';
+  const FB_BOOK = { Mt: 'mat', Mk: 'mrk', Lk: 'luk', Jn: 'jhn', Ac: 'act', Isa: 'isa', Mal: 'mal', Heb: 'heb', '1Co': '1co' };
+  const FB_CACHE = 'bsb-v1';
+  const books = new Map();
+
+  function fetchBook(b) {
+    if (!books.has(b)) {
+      const url = FB_URL + FB_BOOK[b] + '.json';
+      const p = (async () => {
+        let cache = null;
+        try {
+          cache = await caches.open(FB_CACHE);
+          const hit = await cache.match(url);
+          if (hit) return (await hit.json()).contents;
+        } catch (e) { cache = null; }
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`fetch.bible returned ${res.status}`);
+        if (cache) cache.put(url, res.clone()).catch(() => {});
+        return (await res.json()).contents;
+      })();
+      p.catch(() => books.delete(b));
+      books.set(b, p);
+    }
+    return books.get(b);
+  }
+
+  // Only the handful of tags fetch.bible emits, with only the attributes we style.
+  const SAFE_TAGS = new Set(['P', 'H3', 'H4', 'SUP', 'SPAN', 'BR', 'EM', 'I', 'B', 'STRONG']);
+  const SAFE_ATTRS = new Set(['class', 'data-v', 'data-c']);
+  function sanitize(html) {
+    const t = document.createElement('template');
+    t.innerHTML = html;
+    (function walk(node) {
+      for (const el of [...node.children]) {
+        if (!SAFE_TAGS.has(el.tagName)) { el.replaceWith(...el.childNodes); continue; }
+        for (const a of [...el.attributes]) if (!SAFE_ATTRS.has(a.name)) el.removeAttribute(a.name);
+        walk(el);
+      }
+    })(t.content);
+    // unwrap may expose new children of the parent; run once more for safety
+    t.content.querySelectorAll('*').forEach((el) => { if (!SAFE_TAGS.has(el.tagName)) el.replaceWith(...el.childNodes); });
+    return t.innerHTML;
+  }
+
+  function passageHtml(contents, ref) {
+    return ref.s.map(([c1, v1, c2, v2]) => {
+      let html = '', last = null;
+      for (let c = c1; c <= c2; c++) {
+        const ch = contents[c]; if (!ch) continue;
+        const from = c === c1 && v1 != null ? v1 : 1;
+        const to = c === c2 && v2 != null ? v2 : ch.length - 1;
+        for (let v = from; v <= to; v++) {
+          const cell = ch[v];
+          if (!cell || !cell[1]) continue; // verse omitted by the BSB (footnoted at the prior verse)
+          if (!last) html += cell[0];
+          html += cell[1]; last = cell;
+        }
+      }
+      // the source text has "( that is … )"-style padding inside some parentheses
+      // (and a stray "vvv" in fetch.bible's Luke 9:33)
+      return last ? (html + last[2]).replace(/\(\s*vvv\s*/g, '(').replace(/\(\s+/g, '(').replace(/\s+\)/g, ')') : '';
+    }).filter(Boolean).join('<div class="gap" aria-label="verses omitted">· · ·</div>');
+  }
 
   // Registry of every passage the app can show. rid -> { ref, b, verses }
   const REFS = [];
   function reg(ref) { REFS.push({ ref, b: ref.b, verses: expand(ref) }); return REFS.length - 1; }
 
   /* ------------------------------------------------------------ state */
-  const state = { read: {}, notes: {}, prefs: { view: 'harmony', sheet: 1, version: 'ESV', filter: 'all' } };
+  const state = { read: {}, notes: {}, prefs: { view: 'harmony', sheet: 1, filter: 'all', footnotes: false } };
 
   function toRanges(set) {
     const a = [...set].sort((x, y) => x - y), r = [];
@@ -153,6 +220,7 @@
       cur.t = ta.value; cur.u = Date.now();
       if (!cur.t.trim() && !cur.s) delete state.notes[id]; else state.notes[id] = cur;
       el.classList.toggle('has', !!ta.value.trim());
+      mirrorNote(id, el);
       save(); syncNoteMarks();
     });
     $$('.note-status button', el).forEach((b) => b.addEventListener('click', () => {
@@ -160,9 +228,21 @@
       cur.s = b.dataset.s || undefined; cur.u = Date.now();
       state.notes[id] = cur;
       $$('.note-status button', el).forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+      mirrorNote(id, el);
       save(); syncNoteMarks();
     }));
     return el;
+  }
+  // The same note can be open twice (e.g. in the reader and on the page beneath it).
+  function mirrorNote(id, from) {
+    const n = state.notes[id] || {};
+    $$('.notebox').forEach((box) => {
+      if (box === from || box.dataset.note !== id) return;
+      const ta = $('textarea', box);
+      if (ta.value !== (n.t || '')) ta.value = n.t || '';
+      box.classList.toggle('has', !!(n.t || '').trim());
+      $$('.note-status button', box).forEach((x) => x.setAttribute('aria-pressed', String((x.dataset.s || undefined) === n.s)));
+    });
   }
   const hasNote = (id) => !!(state.notes[id] && state.notes[id].t && state.notes[id].t.trim());
   function syncNoteMarks() {
@@ -204,12 +284,14 @@
   const HARMONY_VERSES = (() => { let n = 0; for (const k in verseToSecs) n++; return n; })();
 
   // Sheets: register readings, cross-reference to harmony sections by verse overlap.
+  const GROUPS = {}; // gid -> { sheet, g }
   const SHEETS = D.sheets.map((sheet) => {
     let qseq = 0;
     const groups = [];
     sheet.items.forEach((g, gi) => {
       if (!g.r) return;
       g.gid = `g-${sheet.n}-${gi}`;
+      GROUPS[g.gid] = { sheet, g };
       g.r.forEach((r) => {
         r.rid = reg(r.ref);
         const secs = new Set();
@@ -281,9 +363,9 @@
       ? `<span class="p none" aria-hidden="true"><span class="pg">${GOSPELS[i]}</span></span>`
       : passageBtn(rid, { short: true, g: GOSPELS[i] }))).join('');
     const extras = S.extra.map((x) => (x.cf
-      ? `<a class="cf" href="${gatewayUrl([REFS[x.rid].ref])}" target="_blank" rel="noopener">cf. ${esc(fmtRef(REFS[x.rid].ref))}</a>`
+      ? `<button class="cf" data-read="${x.rid}">cf. ${esc(fmtRef(REFS[x.rid].ref))}</button>`
       : passageBtn(x.rid))).join(' ');
-    const allRefs = [...S.rids.filter((r) => r != null), ...S.extra.filter((x) => !x.cf).map((x) => x.rid)].map((r) => REFS[r].ref);
+    const allRefs = S.req;
     const el = h(`<article class="sec lv-${it.level || 'a'}${it.meanwhile ? ' meanwhile' : ''}" id="s${S.n}" data-n="${S.n}" data-has-note="s:${S.n}">
       <button class="sec-n" aria-label="Mark all of section ${S.n} read" title="Mark the whole section read">${S.n}</button>
       <div class="sec-t">
@@ -291,7 +373,7 @@
         ${extras ? `<div class="extras">${extras}</div>` : ''}
       </div>
       <div class="cells">${cells}</div>
-      <a class="readall" href="${gatewayUrl(allRefs)}" target="_blank" rel="noopener" title="${allRefs.length > 1 ? `Read all ${allRefs.length} accounts together` : 'Read this passage'}" aria-label="Read section ${S.n} at BibleGateway">${ICON_READ}${allRefs.length > 1 ? `<span>${allRefs.length}</span>` : ''}</a>
+      <button class="readall" data-read="${allRefs.join(',')}" data-sec="${S.n}" title="${allRefs.length > 1 ? `Read all ${allRefs.length} accounts side by side` : 'Read this passage'}" aria-label="Read section ${S.n}">${ICON_READ}${allRefs.length > 1 ? `<span>${allRefs.length}</span>` : ''}</button>
     </article>`);
     el._S = S;
     return el;
@@ -480,7 +562,7 @@
       g.r.forEach((r) => list.append(readingEl(sheet, g, r)));
       el.append(list);
       const refs = g.r.map((r) => r.ref);
-      if (refs.length > 1) el.append(h(`<a class="readall wide" href="${gatewayUrl(refs)}" target="_blank" rel="noopener" data-rids="${g.r.map((r) => r.rid).join(',')}">${ICON_READ}<span>Read all ${refs.length} passages together</span></a>`));
+      if (refs.length > 1) el.append(h(`<button class="readall wide" data-read="${g.r.map((r) => r.rid).join(',')}" data-gid="${g.gid}">${ICON_READ}<span>Read all ${refs.length} side by side</span></button>`));
     }
     if (g.q && g.q.length) el.append(questionsEl(sheet, g, g.q));
     return el;
@@ -494,7 +576,7 @@
         ${r.opt ? '<span class="badge">optional</span>' : ''}
         ${r.fixed ? `<span class="badge fixed" title="The printed sheet reads “${esc(r.src)}”, an evident typo">corrected</span>` : ''}
         <span class="r-x">${xr}</span>
-        ${r.ref.b in BOOK_NAME && (g.r.length === 1) ? `<a class="readall" href="${gatewayUrl([r.ref])}" target="_blank" rel="noopener" title="Read at BibleGateway" aria-label="Read ${esc(fmtRef(r.ref))} at BibleGateway" data-rids="${r.rid}">${ICON_READ}</a>` : ''}
+        <button class="readall" data-read="${r.rid}" data-gid="${g.gid}" title="Read ${esc(fmtRef(r.ref))}" aria-label="Read ${esc(fmtRef(r.ref))}">${ICON_READ}</button>
       </div>
       ${r.note ? `<div class="r-note">${paras(r.note)}</div>` : ''}
       ${r.fn ? `<div class="r-note fn"><span class="hinge-k">Footnote</span>${paras(r.fn)}</div>` : ''}
@@ -650,6 +732,7 @@
     c.innerHTML = t ? `Continue <span class="c-at">${esc(t.label)}</span>` : 'All read';
     fpDraw();
     syncNoteMarks();
+    refreshReader();
   }
 
   function doContinue() {
@@ -676,6 +759,8 @@
   let toastTimer;
   function toast(msg, actionLabel, action, ms = 6000) {
     const t = $('#toast');
+    const host = $('#reader').open ? $('#reader') : document.body; // stay above the modal
+    if (t.parentElement !== host) host.append(t);
     t.innerHTML = `<span>${esc(msg)}</span>${actionLabel ? `<button class="btn small">${esc(actionLabel)}</button>` : ''}<button class="x" aria-label="Dismiss">×</button>`;
     t.hidden = false;
     if (actionLabel) $('button.btn', t).addEventListener('click', () => { action(); t.hidden = true; });
@@ -683,15 +768,165 @@
     clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.hidden = true; }, ms);
   }
 
-  let pendingRead = null;
-  function offerMark() {
-    if (!pendingRead || document.visibilityState !== 'visible') return;
-    const { rids, label } = pendingRead; pendingRead = null;
-    if (ridsDone(rids)) return;
-    toast(`Finished reading ${label}?`, 'Mark read', () => setRead(rids, true, label), 15000);
+  /* ------------------------------------------------------------ parallel reader
+   * Desktop: the accounts sit side by side in columns.
+   * Phone: one account fills the screen; swipe (or tap a tab) to the next.   */
+  const reader = { rids: [], pushed: false };
+  const isPhone = () => matchMedia('(max-width: 780px)').matches;
+
+  function readerContext(btn) {
+    const rids = btn.dataset.read.split(',').map(Number);
+    if (btn.dataset.sec) {
+      const S = SEC_BY_N[+btn.dataset.sec];
+      return { rids, kicker: `§${S.n}`, title: S.sec.title, bk: S.sec.note, noteId: `s:${S.n}`, noteMeta: noteMetaSec(S) };
+    }
+    if (btn.dataset.gid) {
+      const { sheet, g } = GROUPS[btn.dataset.gid];
+      const rs = g.r.filter((r) => rids.includes(r.rid));
+      return {
+        rids, kicker: `Sheet ${sheet.n}`, title: g.h ? trimHead(g.h) : sheet.title,
+        bk: [g.note, ...rs.map((r) => r.note), ...rs.map((r) => r.fn)].filter(Boolean).join('\n'),
+        sheet, g, qs: [...(g.q || []), ...rs.flatMap((r) => r.q || [])],
+      };
+    }
+    const sec = btn.closest('.sec');
+    return { rids, kicker: sec ? `§${sec._S.n}` : '', title: longRef(REFS[rids[0]].ref) };
   }
-  document.addEventListener('visibilitychange', offerMark);
-  window.addEventListener('focus', () => setTimeout(offerMark, 150));
+
+  function openReader(ctx) {
+    const dlg = $('#reader');
+    reader.rids = ctx.rids;
+    const multi = ctx.rids.length > 1;
+    const hasStudy = !!(ctx.bk || ctx.noteId || (ctx.qs && ctx.qs.length));
+    const cols = ctx.rids.map((rid, i) => {
+      const ref = REFS[rid].ref;
+      return `<section class="rcol" data-i="${i}" aria-label="${esc(longRef(ref))}">
+        <header class="rcol-h"><h3 title="${esc(longRef(ref))}">${esc(ctx.rids.length > 2 ? fmtRef(ref) : longRef(ref))}</h3>
+          <button class="p rmark" data-r="${rid}" aria-pressed="false"><span class="tick" aria-hidden="true"></span><span class="pr"><span class="l-not">Mark read</span><span class="l-done">Read</span></span></button>
+        </header>
+        <div class="rtext" data-rid="${rid}"><p class="loading">Loading ${esc(BOOK_NAME[ref.b])}…</p></div>
+      </section>`;
+    }).join('');
+    const tabs = multi ? `<nav class="rtabs" aria-label="Accounts">${ctx.rids.map((rid, i) =>
+      `<button data-i="${i}" data-r-tab="${rid}" aria-current="${i === 0}"><b>${esc(BOOK_ABBR[REFS[rid].ref.b])}</b><span>${esc(fmtSegs(REFS[rid].ref))}</span></button>`).join('')}</nav>` : '';
+    dlg.innerHTML = `<div class="r-wrap">
+      <header class="r-head">
+        <div class="r-title">${ctx.kicker ? `<span class="r-k">${esc(ctx.kicker)}</span>` : ''}<h2>${esc(ctx.title)}</h2></div>
+        <div class="r-tools">
+          ${hasStudy ? '<button class="btn small r-study" aria-expanded="false">Study notes</button>' : ''}
+          <button class="btn small r-fn" aria-pressed="${!!state.prefs.footnotes}" title="Show the BSB translators’ footnotes">Footnotes</button>
+          <button class="btn icon r-close" aria-label="Close reader"><svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+        </div>
+      </header>
+      ${tabs}
+      <div class="r-cols n${Math.min(ctx.rids.length, 5)}">${cols}</div>
+      <aside class="r-study-panel" hidden></aside>
+      <footer class="r-foot">
+        <span class="r-attr">Berean Standard Bible (public domain) · text from <a href="https://fetch.bible" target="_blank" rel="noopener">fetch.bible</a></span>
+        ${multi ? `<button class="btn r-all"></button>` : ''}
+      </footer>
+    </div>`;
+    dlg.classList.toggle('show-fn', !!state.prefs.footnotes);
+
+    const colsEl = $('.r-cols', dlg);
+    const setTab = (i) => $$('.rtabs button', dlg).forEach((b) => b.setAttribute('aria-current', String(+b.dataset.i === i)));
+    // Programmatic jumps switch scroll-snap off while they run; mandatory snapping can
+    // otherwise interrupt a smooth scroll partway.
+    let jumping = null;
+    const goTab = (i) => {
+      const smooth = !matchMedia('(prefers-reduced-motion: reduce)').matches;
+      colsEl.style.scrollSnapType = 'none';
+      colsEl.scrollTo({ left: i * colsEl.clientWidth, behavior: smooth ? 'smooth' : 'auto' });
+      setTab(i);
+      clearTimeout(jumping);
+      jumping = setTimeout(() => { colsEl.style.scrollSnapType = ''; jumping = null; }, smooth ? 700 : 50);
+    };
+    colsEl.addEventListener('scroll', () => { if (isPhone() && !jumping) setTab(Math.round(colsEl.scrollLeft / colsEl.clientWidth)); }, { passive: true });
+    $$('.rtabs button', dlg).forEach((b) => b.addEventListener('click', () => goTab(+b.dataset.i)));
+    // On a phone, marking one account read moves on to the next unread one.
+    colsEl.addEventListener('click', (e) => {
+      const m = e.target.closest('.rmark'); if (!m || !isPhone()) return;
+      setTimeout(() => {
+        if (status(+m.dataset.r) !== 'done') return;
+        const i = +m.closest('.rcol').dataset.i;
+        const next = ctx.rids.findIndex((r, j) => j > i && status(r) !== 'done');
+        if (next > 0) goTab(next);
+      }, 250);
+    });
+
+    $('.r-close', dlg).addEventListener('click', () => closeReader());
+    $('.r-fn', dlg).addEventListener('click', (e) => {
+      state.prefs.footnotes = !state.prefs.footnotes; save();
+      e.currentTarget.setAttribute('aria-pressed', String(state.prefs.footnotes));
+      dlg.classList.toggle('show-fn', state.prefs.footnotes);
+    });
+    const all = $('.r-all', dlg);
+    if (all) all.addEventListener('click', () => setRead(ctx.rids, !ridsDone(ctx.rids), `${ctx.rids.length} passages`));
+    const sb = $('.r-study', dlg);
+    if (sb) sb.addEventListener('click', () => {
+      const panel = $('.r-study-panel', dlg);
+      if (!panel.firstChild) {
+        if (ctx.bk) panel.append(h(`<div class="bk-note"><span class="hinge-k">Dr. Bookman</span>${paras(ctx.bk)}</div>`));
+        if (ctx.qs && ctx.qs.length) panel.append(questionsEl(ctx.sheet, ctx.g, ctx.qs));
+        if (ctx.noteId) panel.append(noteBox(ctx.noteId, 'Your notes — what each account adds, omits, or orders differently…', ctx.noteMeta));
+      }
+      panel.hidden = !panel.hidden;
+      sb.setAttribute('aria-expanded', String(!panel.hidden));
+    });
+
+    document.body.classList.add('reading');
+    if (!dlg.open) dlg.showModal();
+    if (!reader.pushed) { history.pushState({ reader: 1 }, ''); reader.pushed = true; }
+    colsEl.scrollLeft = 0;
+    refresh();
+    ctx.rids.forEach((rid) => loadPassage($(`.rtext[data-rid="${rid}"]`, dlg), rid));
+  }
+
+  async function loadPassage(box, rid) {
+    const ref = REFS[rid].ref;
+    try {
+      const contents = await fetchBook(ref.b);
+      box.innerHTML = sanitize(passageHtml(contents, ref)) || '<p class="muted">No text for this reference.</p>';
+    } catch (err) {
+      box.innerHTML = `<div class="r-err"><p>Couldn’t load ${esc(BOOK_NAME[ref.b])} from fetch.bible.${navigator.onLine ? '' : ' You appear to be offline; passages you have opened before still work offline.'}</p><button class="btn small">Try again</button></div>`;
+      $('button', box).addEventListener('click', () => { box.innerHTML = '<p class="loading">Loading…</p>'; loadPassage(box, rid); });
+    }
+  }
+
+  function refreshReader() {
+    const d = $('#reader'); if (!d || !d.open) return;
+    $$('[data-r-tab]', d).forEach((b) => b.classList.toggle('done', status(+b.dataset.rTab) === 'done'));
+    const all = $('.r-all', d);
+    if (all) {
+      const done = ridsDone(reader.rids);
+      all.textContent = done ? 'All read ✓' : `Mark all ${reader.rids.length} read`;
+      all.classList.toggle('primary', !done);
+    }
+  }
+
+  // Cleanup is done here rather than only in the dialog's `close` event, which some
+  // embedded browsers never dispatch. Safe to call more than once.
+  function closeReader(fromHistory) {
+    const dlg = $('#reader');
+    if (dlg.open) dlg.close();
+    document.body.classList.remove('reading');
+    if ($('#toast').parentElement !== document.body) document.body.append($('#toast'));
+    if (reader.pushed) { reader.pushed = false; if (!fromHistory) history.back(); }
+  }
+
+  function wireReader() {
+    const dlg = $('#reader');
+    dlg.addEventListener('cancel', (e) => { e.preventDefault(); closeReader(); }); // Esc
+    dlg.addEventListener('close', () => closeReader());
+    dlg.addEventListener('click', (e) => { if (e.target === dlg) closeReader(); }); // backdrop
+    window.addEventListener('popstate', () => { if (dlg.open) closeReader(true); });
+    // Warm the cache when the pointer heads for a read button.
+    document.addEventListener('pointerover', (e) => {
+      const b = e.target.closest('[data-read]'); if (!b || b._warmed) return;
+      b._warmed = true;
+      b.dataset.read.split(',').forEach((rid) => fetchBook(REFS[+rid].b).catch(() => {}));
+    });
+  }
 
   /* ------------------------------------------------------------ events */
   function wire() {
@@ -705,13 +940,8 @@
       if (sn) { const S = sn.closest('.sec')._S; setRead(S.req, !secDone(S), `§${S.n}`); return; }
       const st = e.target.closest('.sec-title');
       if (st) { expandSection(st.closest('.sec')); return; }
-      const ra = e.target.closest('a.readall');
-      if (ra) {
-        const sec = ra.closest('.sec');
-        if (sec) pendingRead = { rids: sec._S.req, label: `§${sec._S.n}` };
-        else if (ra.dataset.rids) { const rids = ra.dataset.rids.split(',').map(Number); pendingRead = { rids, label: rids.length > 1 ? `these ${rids.length} passages` : fmtRef(REFS[rids[0]].ref) }; }
-        return;
-      }
+      const ra = e.target.closest('[data-read]');
+      if (ra) { openReader(readerContext(ra)); return; }
       const xs = e.target.closest('.xref[data-sec]');
       if (xs) { goSection(+xs.dataset.sec); return; }
       const xg = e.target.closest('.xref[data-sheet]');
@@ -724,12 +954,7 @@
       if (menu.open && !e.target.closest('#menu')) menu.open = false;
     });
 
-    const ver = $('#version');
-    ver.value = state.prefs.version;
-    ver.addEventListener('change', () => {
-      state.prefs.version = ver.value; save();
-      $$('a.readall, a.cf').forEach((a) => { a.href = a.href.replace(/version=[^&]*/, 'version=' + encodeURIComponent(ver.value)); });
-    });
+    wireReader();
 
     $('#export').addEventListener('click', () => download(`gospel-harmony-backup-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(serialize(), null, 1), 'application/json'));
     $('#export-md').addEventListener('click', () => download('gospel-harmony-notebook.md', notebookMarkdown(), 'text/markdown'));
@@ -770,6 +995,7 @@
   }
 
   /* ------------------------------------------------------------ boot */
+  if (history.state && history.state.reader) history.replaceState(null, ''); // reloaded with the reader open
   load();
   indexNoteMeta();
   fpInit();
